@@ -1,0 +1,17 @@
+CLAUDE.md
+
+.env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+.DS_Store
+.vscode/
+
+service_account.json
+*.json.key
+
+*.egg-info/
+dist/
+build/
