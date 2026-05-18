@@ -1,30 +1,59 @@
 """Unit tests for the Fieldbook engine layer (Tool Use + Reflection patterns).
 
-Storage functions are mocked — these tests run without Google Sheets credentials.
-Gemini calls are real — ensure GEMINI_API_KEY is set in .env.
+Both storage functions AND Gemini API calls are mocked — these tests run
+instantly with zero network calls and zero API quota consumed.
+
+The Gemini mock controls exactly what the model "returns" so we can test
+every code path deterministically.
 
 Run:
     pytest tests/engine/test_engine.py -v
-
-Patch path is "src.engine.engine.<fn>" because that is where the function is
-imported (used), not where it is defined.
 """
 
-from unittest.mock import patch
+import json
+from unittest.mock import MagicMock, patch
+
 from src.engine.engine import process_request
 
 _ROSTER = ["Marcus Rodriguez", "Jordan Hall", "Tyler Kim"]
+
+
+def _mock_client(extraction: dict, reflection: dict = None):
+    """Build a mock genai.Client whose generate_content returns controlled JSON."""
+    client = MagicMock()
+    responses = []
+
+    ext_resp = MagicMock()
+    ext_resp.text = json.dumps(extraction)
+    responses.append(ext_resp)
+
+    if reflection is not None:
+        ref_resp = MagicMock()
+        ref_resp.text = json.dumps(reflection)
+        responses.append(ref_resp)
+
+    client.models.generate_content.side_effect = responses
+    return client
 
 
 # ---------------------------------------------------------------------------
 # Test 1: Log observation — success path
 # ---------------------------------------------------------------------------
 def test_log_observation_success():
-    with patch("src.engine.engine.save_observation", return_value="success"):
-        result = process_request(
-            "Marcus Rodriguez had excellent footwork today and showed great leadership.",
-            roster=_ROSTER,
-        )
+    extraction = {
+        "intent": "log",
+        "observations": [
+            {"player_name_raw": "Marcus Rodriguez", "notes": "Excellent footwork.", "tags": ["technique"]}
+        ],
+    }
+    reflection = {"complete": True, "unresolved": []}
+
+    with patch("google.genai.Client", return_value=_mock_client(extraction, reflection)):
+        with patch("src.engine.engine.save_observation", return_value="success"):
+            result = process_request(
+                "Marcus Rodriguez had excellent footwork today.",
+                roster=_ROSTER,
+            )
     assert result["status"] == "success"
     assert "message" in result
 
@@ -33,24 +62,37 @@ def test_log_observation_success():
 # Test 2: Log observation — duplicate path
 # ---------------------------------------------------------------------------
 def test_log_observation_duplicate():
-    with patch("src.engine.engine.save_observation", return_value="exists"):
-        result = process_request(
-            "Marcus Rodriguez had excellent footwork today and showed great leadership.",
-            roster=_ROSTER,
-        )
+    extraction = {
+        "intent": "log",
+        "observations": [
+            {"player_name_raw": "Marcus Rodriguez", "notes": "Excellent footwork.", "tags": ["technique"]}
+        ],
+    }
+    reflection = {"complete": True, "unresolved": []}
+
+    with patch("google.genai.Client", return_value=_mock_client(extraction, reflection)):
+        with patch("src.engine.engine.save_observation", return_value="exists"):
+            result = process_request(
+                "Marcus Rodriguez had excellent footwork today.",
+                roster=_ROSTER,
+            )
     assert result["status"] == "exists"
     assert "message" in result
 
 
 # ---------------------------------------------------------------------------
-# Test 3: List observations for a player
+# Test 3: List observations
 # ---------------------------------------------------------------------------
 def test_list_observations_returns_success_with_data():
+    extraction = {"intent": "list", "observations": []}
     mock_obs = [
         {"player_name": "Marcus Rodriguez", "notes": "Good footwork", "tags": "technique"}
     ]
-    with patch("src.engine.engine.get_observations", return_value=mock_obs):
-        result = process_request("Show me all observations.", roster=_ROSTER)
+
+    with patch("google.genai.Client", return_value=_mock_client(extraction)):
+        with patch("src.engine.engine.get_observations", return_value=mock_obs):
+            result = process_request("Show me all observations.", roster=_ROSTER)
+
     assert result["status"] == "success"
     assert isinstance(result["data"], list)
 
@@ -59,12 +101,21 @@ def test_list_observations_returns_success_with_data():
 # Test 4: Reflection — ambiguous name blocks storage call
 # ---------------------------------------------------------------------------
 def test_ambiguous_name_blocked_before_storage():
-    ambiguous_roster = ["Marcus Rodriguez", "Marcus Liu", "Jordan Hall"]
-    with patch("src.engine.engine.save_observation") as mock_save:
-        result = process_request(
-            "Marcus played well today.",
-            roster=ambiguous_roster,
-        )
+    extraction = {
+        "intent": "log",
+        "observations": [
+            {"player_name_raw": "Marcus", "notes": "Played well.", "tags": ["mentality"]}
+        ],
+    }
+    reflection = {"complete": False, "unresolved": ["Marcus"]}
+
+    with patch("google.genai.Client", return_value=_mock_client(extraction, reflection)):
+        with patch("src.engine.engine.save_observation") as mock_save:
+            result = process_request(
+                "Marcus played well today.",
+                roster=["Marcus Rodriguez", "Marcus Liu", "Jordan Hall"],
+            )
+
     assert result["status"] == "incomplete"
     assert "missing" in result
     mock_save.assert_not_called()
@@ -74,6 +125,10 @@ def test_ambiguous_name_blocked_before_storage():
 # Test 5: Unknown intent — graceful fallback
 # ---------------------------------------------------------------------------
 def test_unknown_intent_returns_unknown_status():
-    result = process_request("What is the meaning of life?", roster=_ROSTER)
+    extraction = {"intent": "unknown", "observations": []}
+
+    with patch("google.genai.Client", return_value=_mock_client(extraction)):
+        result = process_request("What is the meaning of life?", roster=_ROSTER)
+
     assert result["status"] == "unknown"
     assert "message" in result

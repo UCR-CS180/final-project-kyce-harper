@@ -83,9 +83,9 @@ def process_request(coach_input: str, roster: list[str]) -> dict:
     """
     try:
         from google import genai
-        from google.genai.types import HttpOptions
+        from google.genai import types
 
-        client = genai.Client(http_options=HttpOptions(api_version="v1"))
+        client = genai.Client(api_key=_API_KEY)
 
         # --------------------------------------------------------------------
         # Step 1 — Tool Use: extract intent and per-player observations
@@ -93,10 +93,10 @@ def process_request(coach_input: str, roster: list[str]) -> dict:
         extraction_response = client.models.generate_content(
             model=_MODEL,
             contents=coach_input,
-            config={
-                "system_instruction": _EXTRACTION_PROMPT,
-                "response_mime_type": "application/json",
-            },
+            config=types.GenerateContentConfig(
+                system_instruction=_EXTRACTION_PROMPT,
+                response_mime_type="application/json",
+            ),
         )
         extraction = json.loads(extraction_response.text)
         intent = extraction.get("intent", "unknown")
@@ -114,7 +114,9 @@ def process_request(coach_input: str, roster: list[str]) -> dict:
             reflection_response = client.models.generate_content(
                 model=_MODEL,
                 contents=reflection_prompt,
-                config={"response_mime_type": "application/json"},
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                ),
             )
             reflection = json.loads(reflection_response.text)
 
