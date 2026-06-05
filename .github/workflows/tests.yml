@@ -40,15 +40,25 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Validate SERVICE_ACCOUNT_JSON secret is set
+        env:
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -z "$SERVICE_ACCOUNT_JSON" ]; then
+            echo "ERROR: SERVICE_ACCOUNT_JSON secret is empty or not set in GitHub repo secrets."
+            exit 1
+          fi
+          echo "Secret is set (${#SERVICE_ACCOUNT_JSON} chars)"
+
       - name: Write service_account.json from secret
         env:
           SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
         run: python3 -c "import os; open('service_account.json', 'w').write(os.environ['SERVICE_ACCOUNT_JSON'])"
 
-      - name: Write .env from secrets
+      - name: Write .env
         run: |
           echo "ANTHROPIC_API_KEY=ci-placeholder" > .env
-          echo "SPREADSHEET_NAME=${{ secrets.SPREADSHEET_NAME }}" >> .env
+          echo "SPREADSHEET_NAME=coach-notes" >> .env
 
       - name: Diagnose Google Sheets connection
         run: python3 diagnose_ci.py
