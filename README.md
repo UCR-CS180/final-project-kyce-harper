@@ -1,5 +1,7 @@
 # Coach Notes Organizer
 
+[![CI](https://github.com/UCR-CS180/final-project-kyce-harper/actions/workflows/tests.yml/badge.svg)](https://github.com/UCR-CS180/final-project-kyce-harper/actions/workflows/tests.yml)
+
 A CLI tool for coaches to log practice observations and get per-player summaries and improvement advice, backed by Google Sheets for persistence and Claude AI for natural-language understanding.
 
 ## What It Does
