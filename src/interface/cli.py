@@ -1,79 +1,116 @@
-"""Fieldbook interface layer — Presentation Layer (Skin) of the system.
+"""Interface layer: CLI presentation for Coach Notes Organizer.
 
 Architecture position:
-    interface -> engine -> storage
+    interface → engine → storage
 
-Collects coach input from the terminal, passes it to process_request() in
-the engine layer, and formats the result dict into a human-readable string.
+Responsibilities:
+  - Ask for team name at startup
+  - Load the roster from storage once at session start
+  - Run a REPL loop, passing each coach message to the engine
+  - Format the engine result dict into a human-readable string
 
-This layer makes no AI calls and does not access storage directly.
+This layer makes NO AI calls and does NOT write to storage directly.
 """
 
 from __future__ import annotations
 
 from src.engine.engine import process_request
+from src.storage.storage_handler import get_players
 
-_WELCOME_BANNER = """
+_BANNER = """
 ========================================
-  Fieldbook — Coaching Assistant
-  Type 'quit' or 'exit' to stop.
+  Coach Notes Organizer
 ========================================
+
+Commands (just type naturally):
+  Add players:      "Add Steve, Bradley, and Kyce"
+  Log practice:     "Steve had great footwork, Bradley needs to work on defense"
+  Player summary:   "Summarize Steve"
+  Improve advice:   "How can I help Bradley improve?"
+  List roster:      "List players"
+  Quit:             quit / exit
 """
 
-_HELP_TEXT = (
+_HELP = (
     "I can help you:\n"
-    "  - Log post-practice observations for players\n"
-    "  - List existing observations\n"
-    "Just describe what you want in plain English."
+    "  - Add players:      'Add Steve, Bradley, and Kyce'\n"
+    "  - Log practice:     'Steve had great footwork, Bradley needs defense work'\n"
+    "  - Player summary:   'Summarize Steve'\n"
+    "  - Improve advice:   'How can I help Bradley improve?'\n"
+    "  - List roster:      'List players'"
 )
-
-_DEFAULT_ROSTER = [
-    "Marcus Rodriguez",
-    "Jordan Hall",
-    "Tyler Kim",
-]
 
 
 def format_response(result: dict) -> str:
     """Convert an engine result dict to a human-readable string.
 
-    Always returns a plain string — never raises.
+    Args:
+        result: Dict with at minimum a "status" key.
+
+    Returns:
+        A plain string. Never raises.
     """
     status = result.get("status")
+
     if status == "success":
-        out = result["message"]
+        out = result.get("message", "")
         data = result.get("data")
         if data:
-            for obs in data:
-                out += f"\n  - {obs['player_name']}: {obs['notes']} [{obs.get('tags', '')}]"
+            for row in data:
+                name  = row.get("player_name", "")
+                notes = row.get("notes", "")
+                dt    = row.get("session_date", "")
+                if notes:
+                    out += f"\n  - {name} [{dt}]: {notes}"
+                else:
+                    out += f"\n  - {name}"
         return out
-    elif status == "exists":
-        return result["message"]
-    elif status == "incomplete":
-        return result["message"] + "\n  Unresolved: " + ", ".join(result["missing"])
-    elif status == "unknown":
-        return result["message"] + "\n\n" + _HELP_TEXT
-    else:
-        return result.get("message", "Unexpected response.")
+
+    if status == "exists":
+        return result.get("message", "Already exists.")
+
+    if status == "incomplete":
+        missing = ", ".join(result.get("missing", []))
+        return result.get("message", "") + f"\n  Unrecognized names: {missing}"
+
+    if status == "unknown":
+        return result.get("message", "") + "\n\n" + _HELP
+
+    # "error" and anything unexpected
+    return result.get("message", "An unexpected error occurred.")
 
 
-def run_session(roster: list[str], process_fn=None):
-    """Run a REPL session: read coach input, call engine, print formatted response.
+def run_session(team_name: str, process_fn=None):
+    """Run a REPL session for the given team.
 
-    Parameters
-    ----------
-    roster:
-        List of player names passed to the engine for disambiguation.
-    process_fn:
-        Callable that accepts a str and returns a dict. Defaults to a lambda
-        wrapping process_request with the roster bound. Pass a mock here in
-        tests so the session runs without a live AI or Google Sheets connection.
+    Args:
+        team_name: Set once at startup; passed to process_request on every call.
+        process_fn: Callable (user_input: str) -> dict. Defaults to a closure
+                    over process_request with team_name and roster bound.
+                    Pass a mock for testing — roster is not loaded when a
+                    process_fn is provided.
     """
     if process_fn is None:
-        process_fn = lambda inp: process_request(inp, roster)
+        roster: list[str] = [r["player_name"] for r in get_players(team_name)]
 
-    print(_WELCOME_BANNER)
-    print(f"Roster loaded: {', '.join(roster)}\n")
+        def process_fn(user_input: str) -> dict:
+            nonlocal roster
+            res = process_request(user_input, roster=roster, team_name=team_name)
+            # Refresh in-memory roster after any successful add_player
+            if res.get("status") in ("success", "exists") and "Added:" in res.get("message", ""):
+                roster = [r["player_name"] for r in get_players(team_name)]
+            return res
+
+        print(_BANNER)
+        print(f"\nTeam: {team_name}")
+        if roster:
+            print(f"Roster: {', '.join(roster)}")
+        else:
+            print("Roster: (empty — add players first)")
+        print()
+    else:
+        print(_BANNER)
+        print(f"\nTeam: {team_name}\n")
 
     while True:
         try:
@@ -81,14 +118,17 @@ def run_session(roster: list[str], process_fn=None):
         except EOFError:
             print("Goodbye!")
             return
+
         if not user_input:
             continue
         if user_input.lower() in ("quit", "exit"):
             print("Goodbye!")
             return
+
         result = process_fn(user_input)
         print(f"Assistant: {format_response(result)}\n")
 
 
 if __name__ == "__main__":
-    run_session(_DEFAULT_ROSTER)
+    team = input("Enter team name: ").strip()
+    run_session(team_name=team)

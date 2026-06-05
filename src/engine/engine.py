@@ -1,11 +1,21 @@
-"""Fieldbook engine layer: Tool Use + Reflection design patterns.
+"""Engine layer: Tool Use + Reflection for Coach Notes Organizer.
 
 Architecture position:
-    interface -> engine -> storage
+    interface → engine → storage
 
-Receives raw coach input and a team roster. Uses Tool Use to extract
-structured per-player observations, then Reflection to validate all
-player names are unambiguous before any storage write occurs.
+process_request() is the only public function. It:
+  1. Calls Claude to extract intent + data from coach input (Tool Use pattern)
+  2. For log_notes: calls Claude again to validate player names against the
+     roster before any storage write (Reflection pattern)
+  3. Dispatches to the correct storage function(s)
+  4. For summary/advice: calls Claude a third time to synthesize a response
+
+Return contract — every code path returns a dict with "status" and "message":
+  {"status": "success",    "message": str, "data": list | None}
+  {"status": "exists",     "message": str, "data": None}
+  {"status": "incomplete", "message": str, "missing": list[str]}
+  {"status": "unknown",    "message": str, "data": None}
+  {"status": "error",      "message": str, "data": None}
 """
 
 from __future__ import annotations
@@ -13,149 +23,292 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from datetime import datetime
+from datetime import date
 
+import anthropic
 from dotenv import load_dotenv
 
-from src.storage.storage_handler import save_observation
-from src.storage.storage_handler_extended import get_observations
+# Import storage functions at module top level so tests can patch them at
+# "src.engine.engine.<fn>" (the usage site, not the definition site).
+from src.storage.storage_handler import (
+    get_observations,
+    get_players,
+    save_observation,
+    save_player,
+)
 
 load_dotenv()
 
-_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-_MODEL = os.getenv("MODEL_NAME", "gemini-2.5-flash")
+_MODEL = "claude-haiku-4-5-20251001"
 
-# --- Prompts ---
+# ── Prompts ───────────────────────────────────────────────────────────────────
 
-_EXTRACTION_PROMPT = """
-You are a Fieldbook Coaching Engine. Analyze the coach's post-practice input and extract intent and data.
+_EXTRACTION_PROMPT = """\
+You are a Coach Notes Engine. Analyze the coach's message and return strict JSON only — no markdown, no code fences, no extra text.
 
-Intents:
-- "log": the coach is describing player performance (mentions players with observations)
-- "list": the coach wants to retrieve existing observations
-- "unknown": the input is unrelated to logging or listing observations
+Recognize exactly one intent:
+  "add_player"     — coach wants to add one or more players to the roster
+  "log_notes"      — coach is describing what players did in practice
+  "player_summary" — coach wants a summary, overview, or report of a specific player's history
+  "improve_advice" — coach wants advice, a workout plan, training tips, or any improvement help for a specific player
+  "list_players"   — coach wants to see the current roster
+  "unknown"        — input is completely unrelated to coaching, players, or practice (e.g. weather, math)
 
-If intent is "log", extract per-player data. Tags must come only from this vocabulary:
-technique, mentality, physical, flag, praise
+Response format per intent:
+
+add_player (supports one OR multiple names):
+{"intent": "add_player", "data": {"player_names": ["<name1>", "<name2>"]}}
+
+log_notes:
+{"intent": "log_notes", "data": {"observations": [{"player_name": "<name>", "notes": "<observation>"}, ...]}}
+
+player_summary or improve_advice:
+{"intent": "<intent>", "data": {"player_name": "<name>"}}
+
+list_players or unknown:
+{"intent": "<intent>", "data": {}}"""
+
+_REFLECTION_PROMPT = """\
+You are a player-name validator for a sports coaching app.
+
+The coach submitted a practice note. The engine extracted these player names:
+{extracted_names}
+
+The team's current roster is:
+{roster}
+
+For each extracted name: does it clearly refer to exactly one player on the roster?
+- Valid: matches (or is an obvious abbreviation/nickname for) exactly one roster player.
+- Invalid: matches zero players OR is ambiguous (could match more than one).
 
 Return strict JSON only — no extra text:
-{
-  "intent": "<log|list|unknown>",
-  "observations": [
-    {
-      "player_name_raw": "<name as mentioned in the text>",
-      "notes": "<clean observation string>",
-      "tags": ["<tag>"]
-    }
-  ]
-}
+{{"valid": <true|false>, "missing": ["<invalid_name>", ...]}}
 
-If intent is not "log", return an empty observations array.
-""".strip()
+valid=true only if EVERY extracted name maps to exactly one roster player.
+If valid=true, missing must be []."""
 
-_REFLECTION_PROMPT = """
-You are a name resolution validator for a sports coaching app.
+_SUMMARY_PROMPT = """\
+You are a grizzled southern NFL head coach — think old-school Texas football, straight-talking, cowboy attitude. You call players "son" or by their first name, you use southern expressions naturally, and you tell it like it is without sugarcoating. You genuinely care about your players but you hold them accountable.
 
-Extracted player name tokens: {extracted_names}
-Team roster: {roster}
+Summarize this player's practice history in your voice.
 
-For each extracted name token, determine if it uniquely matches exactly one player on the roster.
-A name is ambiguous if it partially matches more than one roster entry (e.g. "Marcus" when both
-"Marcus Rodriguez" and "Marcus Liu" are on the roster).
-A name is unresolvable if it matches no roster entry at all.
+Player: {player_name}
+Team: {team_name}
+Observations:
+{observations_text}
 
-Return strict JSON only — no extra text:
-{{"complete": <true|false>, "unresolved": ["<name_token>", ...]}}
+Write a 2-3 sentence summary in your coach voice. Be honest about what you've seen.
+Return strict JSON only — no markdown, no code fences:
+{{"summary": "<your summary in coach voice>"}}"""
 
-Return complete=true only if every extracted name maps to exactly one roster player.
-""".strip()
+_ADVICE_PROMPT = """\
+You are a grizzled southern NFL head coach — think old-school Texas football, straight-talking, cowboy attitude. You call players "son" or by their first name, you use southern expressions naturally ("I'll tell you what", "ain't gonna sugarcoat it", "hotter than a billy goat in a pepper patch"), and you hold players accountable while genuinely caring about their development.
+
+Give improvement advice for this player in your coach voice.
+
+Player: {player_name}
+Team: {team_name}
+Total observations on file: {obs_count}
+Observations:
+{observations_text}
+
+Rules:
+- If there are only 1-2 observations, be upfront and honest that it's early days — you need more reps before drawing conclusions. Still give 1-2 specific actionable things based on what you DO see.
+- If a note mentions a position the player is competing for, tailor advice to that position with specific drills.
+- Be direct and specific — name the drill or exercise, don't just say "work on your skills".
+- Do not invent anything not in the observations.
+
+Return strict JSON only — no markdown, no code fences:
+{{"advice": "<your honest, cowboy coach advice here>"}}"""
 
 
-def process_request(coach_input: str, roster: list[str]) -> dict:
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _call_claude(client: anthropic.Anthropic, system: str, user: str) -> dict:
+    msg = client.messages.create(
+        model=_MODEL,
+        max_tokens=1024,
+        system=system,
+        messages=[{"role": "user", "content": user}],
+    )
+    text = msg.content[0].text.strip()
+    # Strip markdown code fences Claude occasionally adds
+    if text.startswith("```"):
+        text = text.split("```")[1]
+        if text.startswith("json"):
+            text = text[4:]
+        text = text.strip()
+    return json.loads(text)
+
+
+def _format_obs(obs_rows: list[dict]) -> str:
+    return "\n".join(
+        f"- [{r.get('session_date', '?')}] {r.get('notes', '')}"
+        for r in obs_rows
+    )
+
+
+def _resolve_name(extracted: str, roster: list[str]) -> str:
+    """Return the canonical roster name matching extracted (case-insensitive).
+
+    Falls back to the extracted name as-is if no match is found.
+    """
+    lower = extracted.lower()
+    for name in roster:
+        if name.lower() == lower:
+            return name
+    return extracted
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+
+def process_request(user_input: str, roster: list[str], team_name: str) -> dict:
     """Process a coach's natural-language input using Tool Use and Reflection.
 
-    Return contract (every path returns a dict with "status" and "message"):
-    - {"status": "success",    "message": str, "data": list | None}
-    - {"status": "exists",     "message": str, "data": None}
-    - {"status": "incomplete", "message": str, "missing": list}
-    - {"status": "unknown",    "message": str, "data": None}
-    - {"status": "error",      "message": str, "data": None}
+    Args:
+        user_input: Raw text from the coach.
+        roster: Current player names for this team (held in memory by the CLI).
+        team_name: The team's name used as a partition key in storage.
+
+    Returns:
+        dict with "status" and "message" keys. See module docstring for full contract.
     """
     try:
-        from google import genai
-        from google.genai import types
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
-        client = genai.Client(api_key=_API_KEY)
-
-        # --------------------------------------------------------------------
-        # Step 1 — Tool Use: extract intent and per-player observations
-        # --------------------------------------------------------------------
-        extraction_response = client.models.generate_content(
-            model=_MODEL,
-            contents=coach_input,
-            config=types.GenerateContentConfig(
-                system_instruction=_EXTRACTION_PROMPT,
-                response_mime_type="application/json",
-            ),
-        )
-        extraction = json.loads(extraction_response.text)
+        # ── Step 1: Tool Use — extract intent and data ────────────────────────
+        extraction = _call_claude(client, _EXTRACTION_PROMPT, user_input)
         intent = extraction.get("intent", "unknown")
-        observations = extraction.get("observations", [])
+        data   = extraction.get("data", {})
 
-        # --------------------------------------------------------------------
-        # Step 2 — Reflection: validate player names against roster before save
-        # --------------------------------------------------------------------
-        if intent == "log":
-            extracted_names = [obs["player_name_raw"] for obs in observations]
-            reflection_prompt = _REFLECTION_PROMPT.format(
-                extracted_names=json.dumps(extracted_names),
-                roster=json.dumps(roster),
-            )
-            reflection_response = client.models.generate_content(
-                model=_MODEL,
-                contents=reflection_prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
+        # ── Dispatch ──────────────────────────────────────────────────────────
+
+        if intent == "add_player":
+            # Supports a list of names (multi-player add)
+            names = data.get("player_names") or []
+            if not names:
+                single = data.get("player_name", "").strip()
+                names = [single] if single else []
+            if not names:
+                return {"status": "error", "message": "Could not extract any player names.", "data": None}
+
+            added, skipped = [], []
+            for player_name in names:
+                player_name = player_name.strip()
+                row = {
+                    "player_id":   str(uuid.uuid4()),
+                    "team_name":   team_name,
+                    "player_name": player_name,
+                }
+                result = save_player(row)
+                if result == "success":
+                    added.append(player_name)
+                elif result == "exists":
+                    skipped.append(player_name)
+
+            parts = []
+            if added:
+                parts.append(f"Added: {', '.join(added)}")
+            if skipped:
+                parts.append(f"Already on roster: {', '.join(skipped)}")
+            status = "success" if added else "exists"
+            return {"status": status, "message": " | ".join(parts), "data": None}
+
+        if intent == "log_notes":
+            observations = data.get("observations", [])
+            if not observations:
+                return {"status": "error", "message": "No player observations found in your note.", "data": None}
+
+            # ── Step 2: Reflection — validate names before any write ──────────
+            extracted_names = [obs["player_name"] for obs in observations]
+            reflection = _call_claude(
+                client,
+                "You are a JSON-only validator. Return only valid JSON.",
+                _REFLECTION_PROMPT.format(
+                    extracted_names=json.dumps(extracted_names),
+                    roster=json.dumps(roster),
                 ),
             )
-            reflection = json.loads(reflection_response.text)
-
-            if not reflection.get("complete", False):
+            if not reflection.get("valid", False):
                 return {
                     "status": "incomplete",
-                    "message": "Player names could not be uniquely resolved against the roster.",
-                    "missing": reflection.get("unresolved", []),
+                    "message": "Some player names in your note do not match the roster.",
+                    "missing": reflection.get("missing", []),
                 }
 
-        # --------------------------------------------------------------------
-        # Step 3 — Dispatch: call the correct storage function
-        # --------------------------------------------------------------------
-        if intent == "log":
-            last_result = "error"
+            # ── Step 3: Save one observation row per player ───────────────────
+            today = date.today().isoformat()
+            saved = 0
             for obs in observations:
-                data = {
-                    "observation_id": str(uuid.uuid4()),
-                    "session_id": str(uuid.uuid4()),
-                    "player_id": obs["player_name_raw"].lower().replace(" ", "_"),
-                    "player_name": obs["player_name_raw"],
-                    "notes": obs["notes"],
-                    "tags": ",".join(obs.get("tags", [])),
+                row = {
+                    "obs_id":       str(uuid.uuid4()),
+                    "player_name":  obs["player_name"],
+                    "team_name":    team_name,
+                    "session_date": today,
+                    "notes":        obs["notes"],
                 }
-                last_result = save_observation(data)
+                if save_observation(row) == "success":
+                    saved += 1
 
-            if last_result == "success":
-                return {"status": "success", "message": f"Logged observations for {len(observations)} player(s).", "data": None}
-            elif last_result == "exists":
-                return {"status": "exists", "message": "Observation already logged for this session.", "data": None}
-            else:
-                return {"status": "error", "message": "Storage error.", "data": None}
+            if saved == 0:
+                return {"status": "error", "message": "Storage error — no observations saved.", "data": None}
+            return {"status": "success", "message": f"Logged notes for {saved} player(s).", "data": None}
 
-        elif intent == "list":
-            all_obs = get_observations("")
-            return {"status": "success", "message": f"{len(all_obs)} observation(s) found.", "data": all_obs}
+        if intent == "list_players":
+            players = get_players(team_name)
+            return {
+                "status": "success",
+                "message": f"{len(players)} player(s) on the roster.",
+                "data": players,
+            }
 
-        else:
-            return {"status": "unknown", "message": "I can log or retrieve coaching observations.", "data": None}
+        if intent == "player_summary":
+            player_name = _resolve_name(data.get("player_name", "").strip(), roster)
+            obs_rows = get_observations(player_name, team_name)
+            if not obs_rows:
+                return {"status": "success", "message": f"No notes found for {player_name} yet.", "data": []}
+            synthesis = _call_claude(
+                client,
+                "You are a JSON-only sports assistant. Return only valid JSON, no markdown.",
+                _SUMMARY_PROMPT.format(
+                    player_name=player_name,
+                    team_name=team_name,
+                    observations_text=_format_obs(obs_rows),
+                ),
+            )
+            return {
+                "status": "success",
+                "message": synthesis.get("summary", "No summary generated."),
+                "data": obs_rows,
+            }
+
+        if intent == "improve_advice":
+            player_name = _resolve_name(data.get("player_name", "").strip(), roster)
+            obs_rows = get_observations(player_name, team_name)
+            if not obs_rows:
+                return {"status": "success", "message": f"No notes found for {player_name} yet.", "data": []}
+            advice = _call_claude(
+                client,
+                "You are a JSON-only sports assistant. Return only valid JSON, no markdown.",
+                _ADVICE_PROMPT.format(
+                    player_name=player_name,
+                    team_name=team_name,
+                    obs_count=len(obs_rows),
+                    observations_text=_format_obs(obs_rows),
+                ),
+            )
+            return {
+                "status": "success",
+                "message": advice.get("advice", "No advice generated."),
+                "data": None,
+            }
+
+        # unknown
+        return {
+            "status": "unknown",
+            "message": "Son, I'm a football coach, not a magic 8-ball. Stick to the playbook — add players, log practice notes, get a player summary, or ask how to help someone improve.",
+            "data": None,
+        }
 
     except Exception as exc:
         return {"status": "error", "message": str(exc), "data": None}

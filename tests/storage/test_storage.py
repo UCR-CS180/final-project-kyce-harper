@@ -1,90 +1,74 @@
-"""Storage layer tests for Fieldbook.
+"""Integration tests for storage_handler.py.
 
-These are integration tests — they hit a real Google Sheet.
-Run only after Google Sheets is configured and service_account.json is in the project root.
+These hit the real Google Sheet — requires service_account.json and
+SPREADSHEET_NAME set in .env.
 
 Run:
     pytest tests/storage/test_storage.py -v
 """
 
 import uuid
-from src.storage.storage_handler import save_observation
-from src.storage.storage_handler_extended import get_observations, delete_observation
 
-_TEST_SESSION_ID = "test-session-001"
+from src.storage.storage_handler import (
+    get_observations,
+    get_players,
+    save_observation,
+    save_player,
+)
+
+_TEAM = "test-team-" + str(uuid.uuid4())[:8]
 
 
-def _make_observation(player_id: str = None, name: str = "Test Player") -> dict:
+def _player(name: str = None) -> dict:
     return {
-        "observation_id": str(uuid.uuid4()),
-        "session_id": _TEST_SESSION_ID,
-        "player_id": player_id or str(uuid.uuid4()),
-        "player_name": name,
-        "notes": "Strong footwork. Good attitude throughout the session.",
-        "tags": "technique,mentality",
+        "player_id": str(uuid.uuid4()),
+        "team_name": _TEAM,
+        "player_name": name or "Player-" + str(uuid.uuid4())[:4],
     }
 
 
-# ---------------------------------------------------------------------------
-# Happy path — new observation is saved successfully
-# ---------------------------------------------------------------------------
+def _observation(player_name: str = "Test Player") -> dict:
+    return {
+        "obs_id": str(uuid.uuid4()),
+        "player_name": player_name,
+        "team_name": _TEAM,
+        "session_date": "2026-06-04",
+        "notes": "Strong footwork during warm-up drills.",
+    }
+
+
+# ── save_player ───────────────────────────────────────────────────────────────
+
+def test_save_player_success():
+    assert save_player(_player()) == "success"
+
+
+def test_save_player_exists():
+    data = _player("Duplicate Danny")
+    save_player(data)
+    assert save_player(data) == "exists"
+
+
+def test_save_player_missing_fields():
+    assert save_player({"player_name": "No ID"}) == "error"
+
+
+# ── save_observation ──────────────────────────────────────────────────────────
+
 def test_save_observation_success():
-    data = _make_observation()
-    result = save_observation(data)
-    assert result == "success"
+    assert save_observation(_observation()) == "success"
 
 
-# ---------------------------------------------------------------------------
-# Duplicate path — same (session_id, player_id) is rejected
-# ---------------------------------------------------------------------------
-def test_save_observation_duplicate():
-    player_id = str(uuid.uuid4())
-    data = _make_observation(player_id=player_id)
-    save_observation(data)
-
-    duplicate = _make_observation(player_id=player_id)
-    duplicate["session_id"] = _TEST_SESSION_ID
-    result = save_observation(duplicate)
-    assert result == "exists"
-
-
-# ---------------------------------------------------------------------------
-# Missing fields — returns error without writing
-# ---------------------------------------------------------------------------
 def test_save_observation_missing_fields():
-    result = save_observation({"player_name": "Bob"})
-    assert result == "error"
+    assert save_observation({"notes": "good session"}) == "error"
 
 
-# ---------------------------------------------------------------------------
-# Get observations — returns a list for a known player
-# ---------------------------------------------------------------------------
-def test_get_observations_returns_list():
-    player_id = str(uuid.uuid4())
-    data = _make_observation(player_id=player_id)
-    save_observation(data)
+# ── get_observations ──────────────────────────────────────────────────────────
 
-    results = get_observations(player_id)
+def test_get_observations_returns_saved_rows():
+    name = "Observable Oscar " + str(uuid.uuid4())[:4]
+    save_observation(_observation(name))
+    results = get_observations(name, _TEAM)
     assert isinstance(results, list)
     assert len(results) >= 1
-
-
-# ---------------------------------------------------------------------------
-# Delete observation — removes the row successfully
-# ---------------------------------------------------------------------------
-def test_delete_observation_success():
-    obs_id = str(uuid.uuid4())
-    data = _make_observation()
-    data["observation_id"] = obs_id
-    save_observation(data)
-
-    result = delete_observation(obs_id)
-    assert result == "success"
-
-
-# ---------------------------------------------------------------------------
-# Delete observation — not_found for unknown id
-# ---------------------------------------------------------------------------
-def test_delete_observation_not_found():
-    result = delete_observation("nonexistent-id-xyz")
-    assert result == "not_found"
+    assert all(r["player_name"] == name for r in results)

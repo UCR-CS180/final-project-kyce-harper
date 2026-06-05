@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Job 1: Mocked tests — no secrets needed ────────────────────────────────
+  unit-tests:
+    name: Unit Tests (engine + interface)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run engine and interface tests
+        run: pytest tests/engine/ tests/interface/ -v
+
+  # ── Job 2: Integration tests — requires GitHub secrets ────────────────────
+  storage-tests:
+    name: Integration Tests (storage → Google Sheets)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Write service_account.json from secret
+        env:
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+        run: echo "$SERVICE_ACCOUNT_JSON" > service_account.json
+
+      - name: Write .env from secrets
+        run: |
+          echo "ANTHROPIC_API_KEY=ci-placeholder" > .env
+          echo "SPREADSHEET_NAME=${{ secrets.SPREADSHEET_NAME }}" >> .env
+
+      - name: Run storage integration tests
+        run: pytest tests/storage/ -v
