@@ -43,7 +43,7 @@ jobs:
       - name: Write service_account.json from secret
         env:
           SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
-        run: echo "$SERVICE_ACCOUNT_JSON" > service_account.json
+        run: python3 -c "import os; open('service_account.json', 'w').write(os.environ['SERVICE_ACCOUNT_JSON'])"
 
       - name: Write .env from secrets
         run: |
