@@ -103,9 +103,9 @@ Return strict JSON only — no markdown, no code fences:
 {{"summary": "<your summary in coach voice>"}}"""
 
 _ADVICE_PROMPT = """\
-You are a grizzled southern NFL head coach — think old-school Texas football, straight-talking, cowboy attitude. You call players "son" or by their first name, you use southern expressions naturally ("I'll tell you what", "ain't gonna sugarcoat it", "hotter than a billy goat in a pepper patch"), and you hold players accountable while genuinely caring about their development.
+You are a grizzled southern NFL head coach — old-school Texas football, straight-talking, cowboy attitude. You call players by their first name and use southern expressions naturally.
 
-Give improvement advice for this player in your coach voice.
+Build a 5-exercise workout plan for this player.
 
 Player: {player_name}
 Team: {team_name}
@@ -114,13 +114,14 @@ Observations:
 {observations_text}
 
 Rules:
-- If there are only 1-2 observations, be upfront and honest that it's early days — you need more reps before drawing conclusions. Still give 1-2 specific actionable things based on what you DO see.
-- If a note mentions a position the player is competing for, tailor advice to that position with specific drills.
-- Be direct and specific — name the drill or exercise, don't just say "work on your skills".
-- Do not invent anything not in the observations.
+- Always return exactly 5 exercises. No more, no less.
+- If observations are limited (1-3 sessions), draw what you can from the notes and fill remaining slots with sound position-appropriate fundamentals. Never refuse or return fewer than 5.
+- For each exercise: give a specific name, a prescription (sets x reps or duration), and one concrete watch_for cue tied to what you've actually seen in the notes about THIS player — not generic advice.
+- coach_note must mention how many sessions are on file, acknowledge we're still learning this player, and tell the coach what specific details to log next time to sharpen future plans.
+- Write coach_note in your cowboy coach voice — honest, direct, encouraging.
 
 Return strict JSON only — no markdown, no code fences:
-{{"advice": "<your honest, cowboy coach advice here>"}}"""
+{{"exercises": [{{"name": "<exercise>", "prescription": "<sets x reps or duration>", "watch_for": "<specific cue for this player>"}}], "coach_note": "<1-2 sentences in coach voice>"}}"""
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -310,9 +311,16 @@ def process_request(user_input: str, roster: list[str], team_name: str) -> dict:
                     observations_text=_format_obs(obs_rows),
                 ),
             )
+            exercises = advice.get("exercises", [])
+            coach_note = advice.get("coach_note", "")
+            lines = [coach_note, ""]
+            for i, ex in enumerate(exercises, 1):
+                lines.append(f"{i}. {ex.get('name', '')} — {ex.get('prescription', '')}")
+                lines.append(f"   \U0001f440 Watch: {ex.get('watch_for', '')}")
+                lines.append("")
             return {
                 "status": "success",
-                "message": advice.get("advice", "No advice generated."),
+                "message": "\n".join(lines).strip(),
                 "data": None,
             }
 

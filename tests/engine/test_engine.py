@@ -117,9 +117,18 @@ def test_player_summary_success():
 # ── Test 4: improve_advice — happy path ──────────────────────────────────────
 
 def test_improve_advice_success():
-    """Extraction → get_observations(mocked) → advice → status 'success'."""
+    """Extraction → get_observations(mocked) → structured workout plan → status 'success'."""
     extraction = {"intent": "improve_advice", "data": {"player_name": "Sarah Jones"}}
-    advice     = {"advice": "Focus on defensive footwork drills twice a week."}
+    advice = {
+        "exercises": [
+            {"name": "Lateral Shuffles",      "prescription": "3x10 yards", "watch_for": "hip drop on direction change"},
+            {"name": "Drop-Step Footwork",     "prescription": "3x8 reps",   "watch_for": "decisiveness at the break point"},
+            {"name": "Defensive Stance Holds", "prescription": "3x30 sec",   "watch_for": "knee bend and weight distribution"},
+            {"name": "Mirror Drill",           "prescription": "4x20 sec",   "watch_for": "reaction time and eye discipline"},
+            {"name": "Resistance Band Steps",  "prescription": "3x12 each",  "watch_for": "keeping band taut — no slack"},
+        ],
+        "coach_note": "Two sessions in on Sarah — we're just getting started, son. Log footwork and defensive positioning next time to sharpen this plan.",
+    }
 
     mock_obs = [
         {"player_name": "Sarah Jones", "team_name": _TEAM,
@@ -136,6 +145,9 @@ def test_improve_advice_success():
 
     assert result["status"] == "success"
     assert "message" in result
+    assert "Lateral Shuffles" in result["message"]
+    assert "Watch:" in result["message"]
+    assert "coach_note" not in result  # formatted into message, not a separate field
 
 
 # ── Test 5: unknown intent ────────────────────────────────────────────────────
