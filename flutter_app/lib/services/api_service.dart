@@ -15,6 +15,16 @@ class ApiService {
     return [];
   }
 
+  static Future<List<Map<String, dynamic>>> getAllObservations(String teamName) async {
+    final uri = Uri.parse('$baseUrl/observations/${Uri.encodeComponent(teamName)}');
+    final response = await http.get(uri);
+    if (response.statusCode == 200) {
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      return List<Map<String, dynamic>>.from(body['observations'] as List);
+    }
+    return [];
+  }
+
   static Future<Map<String, dynamic>> sendMessage(
     String teamName,
     String userInput,

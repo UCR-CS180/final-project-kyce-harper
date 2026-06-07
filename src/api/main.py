@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from src.engine.engine import process_request
-from src.storage.storage_handler import get_players
+from src.storage.storage_handler import get_all_observations, get_players
 
 app = FastAPI(title="Coach Notes Organizer API")
 
@@ -42,6 +42,12 @@ def get_roster(team_name: str) -> dict:
     """Return the player name list for a team."""
     rows = get_players(team_name)
     return {"players": [r["player_name"] for r in rows]}
+
+
+@app.get("/observations/{team_name}")
+def get_team_observations(team_name: str) -> dict:
+    """Return all observations for a team, newest first."""
+    return {"observations": get_all_observations(team_name)}
 
 
 @app.post("/chat")

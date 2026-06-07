@@ -113,3 +113,18 @@ def get_observations(player_name: str, team_name: str) -> list[dict]:
         ]
     except Exception:
         return []
+
+
+def get_all_observations(team_name: str) -> list[dict]:
+    """Return all observations for a team sorted by session_date descending.
+
+    Returns [] on any exception.
+    """
+    try:
+        ss = _open_spreadsheet()
+        ws = ss.worksheet("observations")
+        rows = ws.get_all_records()
+        team_rows = [r for r in rows if r.get("team_name") == team_name]
+        return sorted(team_rows, key=lambda r: r.get("session_date", ""), reverse=True)
+    except Exception:
+        return []

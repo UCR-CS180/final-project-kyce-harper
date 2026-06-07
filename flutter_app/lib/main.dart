@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'screens/team_screen.dart';
-import 'screens/chat_screen.dart';
+import 'screens/main_screen.dart';
 
 void main() {
   runApp(const CoachNotesApp());
@@ -24,7 +24,7 @@ class CoachNotesApp extends StatelessWidget {
       initialRoute: '/',
       routes: {
         '/': (_) => const TeamScreen(),
-        '/chat': (_) => const ChatScreen(),
+        '/chat': (_) => const MainScreen(),
       },
     );
   }
