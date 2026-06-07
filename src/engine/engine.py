@@ -24,6 +24,7 @@ import json
 import os
 import uuid
 from datetime import date
+from difflib import get_close_matches
 
 import anthropic
 from dotenv import load_dotenv
@@ -230,10 +231,22 @@ def process_request(user_input: str, roster: list[str], team_name: str) -> dict:
                 ),
             )
             if not reflection.get("valid", False):
+                missing = reflection.get("missing", [])
+                suggestions = {}
+                for name in missing:
+                    matches = get_close_matches(name, roster, n=1, cutoff=0.5)
+                    if not matches:
+                        lower_map = {r.lower(): r for r in roster}
+                        matches = get_close_matches(name.lower(), lower_map.keys(), n=1, cutoff=0.5)
+                        if matches:
+                            suggestions[name] = lower_map[matches[0]]
+                    else:
+                        suggestions[name] = matches[0]
                 return {
                     "status": "incomplete",
                     "message": "Some player names in your note do not match the roster.",
-                    "missing": reflection.get("missing", []),
+                    "missing": missing,
+                    "suggestions": suggestions,
                 }
 
             # ── Step 3: Save one observation row per player ───────────────────

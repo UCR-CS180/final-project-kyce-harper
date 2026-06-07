@@ -3,15 +3,22 @@ class ChatMessage {
   final bool isCoach;
   final String status;
   final List<String> missingNames;
+  final Map<String, String> suggestions;
+  final String originalInput;
 
   const ChatMessage({
     required this.text,
     required this.isCoach,
     this.status = 'success',
     this.missingNames = const [],
+    this.suggestions = const {},
+    this.originalInput = '',
   });
 
-  factory ChatMessage.fromEngine(Map<String, dynamic> result) {
+  factory ChatMessage.fromEngine(
+    Map<String, dynamic> result, {
+    String originalInput = '',
+  }) {
     final status = result['status'] as String? ?? 'error';
     final message = result['message'] as String? ?? 'No response.';
     final data = result['data'] as List<dynamic>?;
@@ -19,6 +26,10 @@ class ChatMessage {
             ?.map((e) => e.toString())
             .toList() ??
         [];
+    final suggestionsRaw =
+        (result['suggestions'] as Map<String, dynamic>?) ?? {};
+    final suggestions =
+        suggestionsRaw.map((k, v) => MapEntry(k, v.toString()));
 
     String text = message;
     if (status == 'success' && data != null && data.isNotEmpty) {
@@ -36,6 +47,8 @@ class ChatMessage {
       isCoach: false,
       status: status,
       missingNames: missing,
+      suggestions: suggestions,
+      originalInput: originalInput,
     );
   }
 }

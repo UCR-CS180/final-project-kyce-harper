@@ -18,6 +18,7 @@ class _ChatScreenState extends State<ChatScreen> {
   List<ChatMessage> _messages = [];
   bool _isLoading = false;
   bool _initialized = false;
+  final Set<int> _resolvedMessages = {};
 
   static const _statusColors = {
     'success':    Color(0xFF4CAF50),
@@ -56,32 +57,48 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _send() async {
     final input = _controller.text.trim();
     if (input.isEmpty || _isLoading) return;
-
     _controller.clear();
     setState(() {
-      _messages.add(ChatMessage(text: input, isCoach: true, status: 'success'));
+      _messages.add(ChatMessage(text: input, isCoach: true));
       _isLoading = true;
     });
     _scrollToBottom();
 
     final result = await ApiService.sendMessage(_teamName, input, _roster);
     if (!mounted) return;
+    await _applyResult(result, originalInput: input);
+  }
 
-    final reply = ChatMessage.fromEngine(result);
+  // Sends a message without showing a coach bubble — used for disambiguation actions.
+  Future<void> _sendSilent(String input) async {
+    setState(() => _isLoading = true);
+    final result = await ApiService.sendMessage(_teamName, input, _roster);
+    if (!mounted) return;
+    await _applyResult(result, originalInput: input);
+  }
 
-    // Refresh roster after a successful add_player
+  Future<void> _applyResult(
+    Map<String, dynamic> result, {
+    required String originalInput,
+  }) async {
+    final reply = ChatMessage.fromEngine(result, originalInput: originalInput);
     List<String> updatedRoster = _roster;
     if (result['status'] == 'success' &&
         (result['message'] as String? ?? '').contains('Added:')) {
       updatedRoster = await ApiService.getRoster(_teamName);
     }
-
+    if (!mounted) return;
     setState(() {
       _messages.add(reply);
       _roster = updatedRoster;
       _isLoading = false;
     });
     _scrollToBottom();
+  }
+
+  void _resolveAndSend(int messageIndex, String input) {
+    setState(() => _resolvedMessages.add(messageIndex));
+    _sendSilent(input);
   }
 
   void _scrollToBottom() {
@@ -113,7 +130,8 @@ class _ChatScreenState extends State<ChatScreen> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(_teamName, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            Text(_teamName,
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             Text(
               '${_roster.length} player${_roster.length == 1 ? '' : 's'}',
               style: const TextStyle(fontSize: 12, color: Color(0xFF90A4AE)),
@@ -130,7 +148,7 @@ class _ChatScreenState extends State<ChatScreen> {
               itemCount: _messages.length + (_isLoading ? 1 : 0),
               itemBuilder: (context, index) {
                 if (index == _messages.length) return _buildTypingIndicator();
-                return _buildBubble(_messages[index]);
+                return _buildBubble(_messages[index], index);
               },
             ),
           ),
@@ -140,28 +158,33 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Widget _buildBubble(ChatMessage msg) {
+  Widget _buildBubble(ChatMessage msg, int index) {
     if (msg.isCoach) {
       return Align(
         alignment: Alignment.centerRight,
         child: Container(
           margin: const EdgeInsets.only(bottom: 10, left: 48),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          decoration: BoxDecoration(
-            color: const Color(0xFF1565C0),
-            borderRadius: const BorderRadius.only(
+          decoration: const BoxDecoration(
+            color: Color(0xFF1565C0),
+            borderRadius: BorderRadius.only(
               topLeft: Radius.circular(18),
               topRight: Radius.circular(18),
               bottomLeft: Radius.circular(18),
               bottomRight: Radius.circular(4),
             ),
           ),
-          child: Text(msg.text, style: const TextStyle(color: Colors.white, fontSize: 15)),
+          child: Text(msg.text,
+              style: const TextStyle(color: Colors.white, fontSize: 15)),
         ),
       );
     }
 
-    final borderColor = _statusColors[msg.status] ?? const Color(0xFF78909C);
+    final borderColor =
+        _statusColors[msg.status] ?? const Color(0xFF78909C);
+    final showActions = msg.status == 'incomplete' &&
+        msg.missingNames.isNotEmpty &&
+        !_resolvedMessages.contains(index);
 
     return Align(
       alignment: Alignment.centerLeft,
@@ -182,21 +205,62 @@ class _ChatScreenState extends State<ChatScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(msg.text, style: const TextStyle(color: Colors.white, fontSize: 15)),
+              Text(msg.text,
+                  style: const TextStyle(color: Colors.white, fontSize: 15)),
+
+              // Unrecognized name chips
               if (msg.missingNames.isNotEmpty) ...[
-                const SizedBox(height: 6),
+                const SizedBox(height: 8),
                 Wrap(
                   spacing: 6,
                   runSpacing: 4,
                   children: msg.missingNames
                       .map((name) => Chip(
                             label: Text(name,
-                                style: const TextStyle(fontSize: 12, color: Colors.white)),
+                                style: const TextStyle(
+                                    fontSize: 12, color: Colors.white)),
                             backgroundColor: const Color(0xFFFFA726),
                             padding: EdgeInsets.zero,
-                            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
                           ))
                       .toList(),
+                ),
+              ],
+
+              // Disambiguation action buttons
+              if (showActions) ...[
+                const SizedBox(height: 12),
+                const Divider(color: Color(0xFF37474F), height: 1),
+                const SizedBox(height: 10),
+                ...msg.missingNames.expand((name) {
+                  final suggestion = msg.suggestions[name];
+                  return [
+                    if (suggestion != null)
+                      _ActionButton(
+                        label: 'Did you mean "$suggestion"?',
+                        icon: Icons.swap_horiz_rounded,
+                        color: const Color(0xFF4FC3F7),
+                        onTap: () {
+                          final corrected = msg.originalInput
+                              .replaceAll(name, suggestion);
+                          _resolveAndSend(index, corrected);
+                        },
+                      ),
+                    _ActionButton(
+                      label: 'Add "$name" to roster',
+                      icon: Icons.person_add_rounded,
+                      color: const Color(0xFF4CAF50),
+                      onTap: () => _resolveAndSend(index, 'Add $name'),
+                    ),
+                  ];
+                }),
+                const SizedBox(height: 2),
+                GestureDetector(
+                  onTap: () => setState(() => _resolvedMessages.add(index)),
+                  child: const Text('Dismiss',
+                      style:
+                          TextStyle(color: Color(0xFF546E7A), fontSize: 12)),
                 ),
               ],
             ],
@@ -252,7 +316,8 @@ class _ChatScreenState extends State<ChatScreen> {
                 hintStyle: const TextStyle(color: Color(0xFF546E7A)),
                 filled: true,
                 fillColor: const Color(0xFF0D1B2A),
-                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(24),
                   borderSide: BorderSide.none,
@@ -273,10 +338,55 @@ class _ChatScreenState extends State<ChatScreen> {
                 color: Color(0xFF4FC3F7),
                 shape: BoxShape.circle,
               ),
-              child: const Icon(Icons.send_rounded, color: Color(0xFF0D1B2A), size: 20),
+              child: const Icon(Icons.send_rounded,
+                  color: Color(0xFF0D1B2A), size: 20),
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ── Shared widgets ─────────────────────────────────────────────────────────────
+
+class _ActionButton extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _ActionButton({
+    required this.label,
+    required this.icon,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.12),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color.withOpacity(0.4)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 16, color: color),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(label,
+                  style: TextStyle(color: color, fontSize: 13,
+                      fontWeight: FontWeight.w500)),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -304,7 +414,8 @@ class _DotState extends State<_Dot> with SingleTickerProviderStateMixin {
     _anim = Tween(begin: 0.3, end: 1.0).animate(
       CurvedAnimation(
         parent: _ctrl,
-        curve: Interval(widget.delay / 600, 1.0, curve: Curves.easeInOut),
+        curve:
+            Interval(widget.delay / 600, 1.0, curve: Curves.easeInOut),
       ),
     );
   }
@@ -319,7 +430,8 @@ class _DotState extends State<_Dot> with SingleTickerProviderStateMixin {
   Widget build(BuildContext context) {
     return FadeTransition(
       opacity: _anim,
-      child: const CircleAvatar(radius: 4, backgroundColor: Color(0xFF4FC3F7)),
+      child: const CircleAvatar(
+          radius: 4, backgroundColor: Color(0xFF4FC3F7)),
     );
   }
 }
