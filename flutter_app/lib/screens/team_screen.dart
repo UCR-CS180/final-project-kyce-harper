@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../services/api_service.dart';
 
 class TeamScreen extends StatefulWidget {
@@ -35,7 +36,9 @@ class _TeamScreenState extends State<TeamScreen> {
     }
     setState(() => _isLoading = true);
     final teamName = _controller.text.trim();
-    final sportCategory = await ApiService.createOrGetTeam(teamName, _selectedCategory!);
+    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    final sportCategory =
+        await ApiService.createOrGetTeam(teamName, _selectedCategory!, uid);
     if (!mounted) return;
     setState(() => _isLoading = false);
     Navigator.pushNamed(

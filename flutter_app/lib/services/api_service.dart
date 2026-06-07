@@ -5,19 +5,42 @@ class ApiService {
   // iOS simulator → localhost, Android emulator → 10.0.2.2
   static const String baseUrl = 'http://localhost:8000';
 
-  /// Create a team. Returns the sport_category (may come back from an existing team).
-  static Future<String> createOrGetTeam(String teamName, String sportCategory) async {
+  /// Create a team tied to a Firebase user. Returns the sport_category.
+  /// Accepts an optional [client] for dependency injection in tests (Lab 7 pattern).
+  static Future<String> createOrGetTeam(
+      String teamName, String sportCategory, String userId,
+      {http.Client? client}) async {
+    final c = client ?? http.Client();
     final uri = Uri.parse('$baseUrl/teams');
-    final response = await http.post(
+    final response = await c.post(
       uri,
       headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'team_name': teamName, 'sport_category': sportCategory}),
+      body: jsonEncode({
+        'team_name': teamName,
+        'sport_category': sportCategory,
+        'user_id': userId,
+      }),
     );
     if (response.statusCode == 200) {
       final body = jsonDecode(response.body) as Map<String, dynamic>;
       return body['sport_category'] as String? ?? sportCategory;
     }
     return sportCategory;
+  }
+
+  /// Fetch all teams belonging to a user.
+  /// Accepts an optional [client] for dependency injection in tests (Lab 7 pattern).
+  static Future<List<Map<String, dynamic>>> getTeamsForUser(
+      String userId, {http.Client? client}) async {
+    final c = client ?? http.Client();
+    final uri = Uri.parse(
+        '$baseUrl/teams?user_id=${Uri.encodeQueryComponent(userId)}');
+    final response = await c.get(uri);
+    if (response.statusCode == 200) {
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      return List<Map<String, dynamic>>.from(body['teams'] as List);
+    }
+    return [];
   }
 
   /// Returns full player rows including position field.

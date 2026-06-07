@@ -4,18 +4,19 @@ Architecture position:
     Flutter app → (HTTP) → FastAPI (this file) → engine → storage
 
 Endpoints:
-    POST /teams                  — create a team with sport category
-    GET  /teams/{team_name}      — get team info (includes sport_category)
-    GET  /roster/{team_name}     — player name list for a team
+    POST /teams                    — create a team with sport category and user_id
+    GET  /teams?user_id=xxx        — list all teams for a user
+    GET  /teams/{team_name}        — get team info (includes sport_category)
+    GET  /roster/{team_name}       — player name list for a team
     GET  /observations/{team_name} — all observations for a team, newest first
-    POST /chat                   — send a coach message through the engine
+    POST /chat                     — send a coach message through the engine
 """
 
 from __future__ import annotations
 
 import uuid
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -24,6 +25,7 @@ from src.storage.storage_handler import (
     get_all_observations,
     get_players,
     get_team,
+    get_teams_for_user,
     save_team,
 )
 
@@ -42,6 +44,7 @@ app.add_middleware(
 class TeamRequest(BaseModel):
     team_name: str
     sport_category: str
+    user_id: str
 
 
 class ChatRequest(BaseModel):
@@ -53,6 +56,12 @@ class ChatRequest(BaseModel):
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
+@app.get("/teams")
+def list_teams(user_id: str = Query(...)) -> dict:
+    """Return all teams for a given user_id."""
+    return {"teams": get_teams_for_user(user_id)}
+
+
 @app.post("/teams")
 def create_team(req: TeamRequest) -> dict:
     """Create a team. Returns existing team unchanged if team_name already exists."""
@@ -63,6 +72,7 @@ def create_team(req: TeamRequest) -> dict:
         "team_id": str(uuid.uuid4()),
         "team_name": req.team_name,
         "sport_category": req.sport_category,
+        "user_id": req.user_id,
     })
     if result == "error":
         raise HTTPException(status_code=500, detail="Failed to save team.")

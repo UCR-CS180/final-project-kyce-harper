@@ -1,8 +1,15 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'firebase_options.dart';
+import 'screens/auth_screen.dart';
+import 'screens/team_library_screen.dart';
 import 'screens/team_screen.dart';
 import 'screens/main_screen.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   runApp(const CoachNotesApp());
 }
 
@@ -21,9 +28,24 @@ class CoachNotesApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      initialRoute: '/',
+      home: StreamBuilder<User?>(
+        stream: FirebaseAuth.instance.authStateChanges(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Scaffold(
+              backgroundColor: Color(0xFF0D1B2A),
+              body: Center(
+                child: CircularProgressIndicator(color: Color(0xFF4FC3F7)),
+              ),
+            );
+          }
+          return snapshot.data == null
+              ? const AuthScreen()
+              : const TeamLibraryScreen();
+        },
+      ),
       routes: {
-        '/': (_) => const TeamScreen(),
+        '/create': (_) => const TeamScreen(),
         '/chat': (_) => const MainScreen(),
       },
     );

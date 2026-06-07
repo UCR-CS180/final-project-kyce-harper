@@ -4,7 +4,7 @@ Architecture position:
     interface → engine → storage
 
 Sheets in the Google Sheets document:
-  teams:        team_id | team_name | sport_category
+  teams:        team_id | team_name | sport_category | user_id
   players:      player_id | team_name | player_name | position
   observations: obs_id | player_name | team_name | session_date | notes
 """
@@ -24,8 +24,8 @@ _SERVICE_ACCOUNT_PATH = _PROJECT_ROOT / "service_account.json"
 
 SPREADSHEET_NAME = os.environ.get("SPREADSHEET_NAME", "coach-notes")
 
-_TEAM_COLUMNS  = ["team_id", "team_name", "sport_category"]
-_TEAM_REQUIRED = {"team_id", "team_name", "sport_category"}
+_TEAM_COLUMNS  = ["team_id", "team_name", "sport_category", "user_id"]
+_TEAM_REQUIRED = {"team_id", "team_name", "sport_category", "user_id"}
 
 _PLAYER_COLUMNS  = ["player_id", "team_name", "player_name", "position"]
 _PLAYER_REQUIRED = {"player_id", "team_name", "player_name"}
@@ -62,6 +62,17 @@ def save_team(data: dict) -> str:
         return "success"
     except Exception:
         return "error"
+
+
+def get_teams_for_user(user_id: str) -> list[dict]:
+    """Return all teams belonging to user_id. Returns [] on any exception."""
+    try:
+        ss = _open_spreadsheet()
+        ws = ss.worksheet("teams")
+        rows = ws.get_all_records()
+        return [r for r in rows if r.get("user_id") == user_id]
+    except Exception:
+        return []
 
 
 def get_team(team_name: str) -> dict | None:
