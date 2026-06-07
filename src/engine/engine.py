@@ -29,18 +29,70 @@ from difflib import get_close_matches
 import anthropic
 from dotenv import load_dotenv
 
-# Import storage functions at module top level so tests can patch them at
-# "src.engine.engine.<fn>" (the usage site, not the definition site).
 from src.storage.storage_handler import (
     get_observations,
     get_players,
     save_observation,
     save_player,
+    update_player_position,
 )
 
 load_dotenv()
 
 _MODEL = "claude-haiku-4-5-20251001"
+
+# ── Personas ──────────────────────────────────────────────────────────────────
+
+_PERSONAS: dict[str, str] = {
+    "football": (
+        "a grizzled southern NFL head coach — old-school Texas football, straight-talking, "
+        "cowboy attitude. You call players by their first name, use southern expressions "
+        "naturally ('I'll tell you what', 'ain't gonna sugarcoat it'), and hold players "
+        "accountable while genuinely caring about their development."
+    ),
+    "basketball": (
+        "an intense, analytics-driven NBA head coach. You talk fast, love metrics and "
+        "efficiency, reference shot charts and defensive ratings, and push players to be "
+        "mentally sharp. Direct, demanding, but fair."
+    ),
+    "soccer": (
+        "a composed, technical European football manager. You speak precisely, value "
+        "tactical intelligence and positioning, reference formations, and stay calm under "
+        "pressure. Think Pep Guardiola energy — thoughtful and exacting."
+    ),
+    "baseball": (
+        "a patient, old-school baseball skipper. You talk in baseball metaphors, believe "
+        "in fundamentals and repetition, respect the game's history, and never rush a "
+        "young player's development. Steady, wise, unhurried."
+    ),
+    "personal_training": (
+        "a chill, funny, and motivational personal trainer. You keep sessions upbeat, use "
+        "humor to push clients through tough sets, celebrate small wins loudly, and always "
+        "make people feel capable. No judgment — just energy and results."
+    ),
+    "volleyball": (
+        "an energetic, team-focused volleyball club coach. You read momentum well, emphasize "
+        "communication and court awareness, and keep the vibe competitive but fun. You're "
+        "loud on the sideline in the best way."
+    ),
+    "track": (
+        "a methodical sprint and endurance coach. You live in split times, talk about "
+        "form mechanics and periodization, and are precise about load and recovery. "
+        "Data-driven, calm, relentlessly focused on marginal gains."
+    ),
+    "general": (
+        "a professional, supportive, sport-agnostic coach. You are direct, encouraging, "
+        "and adapt your language to whatever the athlete needs. No sport-specific jargon "
+        "unless it fits the context."
+    ),
+}
+
+_DEFAULT_PERSONA = _PERSONAS["general"]
+
+
+def _get_persona(sport_category: str) -> str:
+    return _PERSONAS.get(sport_category, _DEFAULT_PERSONA)
+
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
@@ -49,16 +101,21 @@ You are a Coach Notes Engine. Analyze the coach's message and return strict JSON
 
 Recognize exactly one intent:
   "add_player"     — coach wants to add one or more players to the roster
-  "log_notes"      — coach is describing what players did in practice
+  "set_position"   — coach is assigning or updating a player's position or role
+                     e.g. "Kyce is a QB", "Mark plays center", "Sara is our libero"
+  "log_notes"      — coach is describing what players did in practice or a session
   "player_summary" — coach wants a summary, overview, or report of a specific player's history
-  "improve_advice" — coach wants advice, a workout plan, training tips, or any improvement help for a specific player
+  "improve_advice" — coach wants advice, a workout plan, training tips, or improvement help for a specific player
   "list_players"   — coach wants to see the current roster
-  "unknown"        — input is completely unrelated to coaching, players, or practice (e.g. weather, math)
+  "unknown"        — input is completely unrelated to coaching, players, or practice
 
 Response format per intent:
 
 add_player (supports one OR multiple names):
 {"intent": "add_player", "data": {"player_names": ["<name1>", "<name2>"]}}
+
+set_position (normalize abbreviations to full names: QB→Quarterback, PG→Point Guard, GK→Goalkeeper, etc.):
+{"intent": "set_position", "data": {"player_name": "<name>", "position": "<full position name>"}}
 
 log_notes:
 {"intent": "log_notes", "data": {"observations": [{"player_name": "<name>", "notes": "<observation>"}, ...]}}
@@ -89,26 +146,28 @@ valid=true only if EVERY extracted name maps to exactly one roster player.
 If valid=true, missing must be []."""
 
 _SUMMARY_PROMPT = """\
-You are a grizzled southern NFL head coach — think old-school Texas football, straight-talking, cowboy attitude. You call players "son" or by their first name, you use southern expressions naturally, and you tell it like it is without sugarcoating. You genuinely care about your players but you hold them accountable.
+You are {persona}.
 
 Summarize this player's practice history in your voice.
 
 Player: {player_name}
+Position: {position}
 Team: {team_name}
 Observations:
 {observations_text}
 
-Write a 2-3 sentence summary in your coach voice. Be honest about what you've seen.
+Write a 2-3 sentence summary in your voice. Be honest about what you've seen.
 Return strict JSON only — no markdown, no code fences:
-{{"summary": "<your summary in coach voice>"}}"""
+{{"summary": "<your summary in your voice>"}}"""
 
 _ADVICE_PROMPT = """\
-You are a grizzled southern NFL head coach — old-school Texas football, straight-talking, cowboy attitude. You call players by their first name and use southern expressions naturally.
+You are {persona}.
 
 Build a workout plan for this player.
 
 Coach's request: {user_input}
 Player: {player_name}
+Position: {position}
 Team: {team_name}
 Total observations on file: {obs_count}
 Observations:
@@ -117,12 +176,13 @@ Observations:
 Rules:
 - If the coach's request specifies a number of exercises, use exactly that number. Otherwise default to 5.
 - If observations are limited (1-3 sessions), draw what you can from the notes and fill remaining slots with sound position-appropriate fundamentals. Never refuse or return fewer exercises than requested.
-- For each exercise: give a specific name, a prescription (sets x reps or duration), and one concrete watch_for cue tied to what you've actually seen in the notes about THIS player — not generic advice.
+- Tailor exercises to the player's position and sport where relevant.
+- For each exercise: give a specific name, a prescription (sets x reps or duration), and one concrete watch_for cue tied to what you've actually seen in the notes about THIS player.
 - coach_note must mention how many sessions are on file, acknowledge we're still learning this player, and tell the coach what specific details to log next time to sharpen future plans.
-- Write coach_note in your cowboy coach voice — honest, direct, encouraging.
+- Write entirely in your coach persona voice.
 
 Return strict JSON only — no markdown, no code fences:
-{{"exercises": [{{"name": "<exercise>", "prescription": "<sets x reps or duration>", "watch_for": "<specific cue for this player>"}}], "coach_note": "<1-2 sentences in coach voice>"}}"""
+{{"exercises": [{{"name": "<exercise>", "prescription": "<sets x reps or duration>", "watch_for": "<specific cue for this player>"}}], "coach_note": "<1-2 sentences in your voice>"}}"""
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -135,7 +195,6 @@ def _call_claude(client: anthropic.Anthropic, system: str, user: str) -> dict:
         messages=[{"role": "user", "content": user}],
     )
     text = msg.content[0].text.strip()
-    # Strip markdown code fences Claude occasionally adds
     if text.startswith("```"):
         text = text.split("```")[1]
         if text.startswith("json"):
@@ -152,10 +211,6 @@ def _format_obs(obs_rows: list[dict]) -> str:
 
 
 def _resolve_name(extracted: str, roster: list[str]) -> str:
-    """Return the canonical roster name matching extracted (case-insensitive).
-
-    Falls back to the extracted name as-is if no match is found.
-    """
     lower = extracted.lower()
     for name in roster:
         if name.lower() == lower:
@@ -163,21 +218,37 @@ def _resolve_name(extracted: str, roster: list[str]) -> str:
     return extracted
 
 
+def _player_position(player_name: str, team_name: str) -> str:
+    """Look up a player's position from storage. Falls back to 'Player'."""
+    players = get_players(team_name)
+    for p in players:
+        if p.get("player_name", "").lower() == player_name.lower():
+            return str(p.get("position", "")) or "Player"
+    return "Player"
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def process_request(user_input: str, roster: list[str], team_name: str) -> dict:
+def process_request(
+    user_input: str,
+    roster: list[str],
+    team_name: str,
+    sport_category: str = "general",
+) -> dict:
     """Process a coach's natural-language input using Tool Use and Reflection.
 
     Args:
         user_input: Raw text from the coach.
-        roster: Current player names for this team (held in memory by the CLI).
+        roster: Current player names for this team.
         team_name: The team's name used as a partition key in storage.
+        sport_category: Sport type key — controls AI persona and advice style.
 
     Returns:
         dict with "status" and "message" keys. See module docstring for full contract.
     """
     try:
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        persona = _get_persona(sport_category)
 
         # ── Step 1: Tool Use — extract intent and data ────────────────────────
         extraction = _call_claude(client, _EXTRACTION_PROMPT, user_input)
@@ -187,7 +258,6 @@ def process_request(user_input: str, roster: list[str], team_name: str) -> dict:
         # ── Dispatch ──────────────────────────────────────────────────────────
 
         if intent == "add_player":
-            # Supports a list of names (multi-player add)
             names = data.get("player_names") or []
             if not names:
                 single = data.get("player_name", "").strip()
@@ -202,6 +272,7 @@ def process_request(user_input: str, roster: list[str], team_name: str) -> dict:
                     "player_id":   str(uuid.uuid4()),
                     "team_name":   team_name,
                     "player_name": player_name,
+                    "position":    "Player",
                 }
                 result = save_player(row)
                 if result == "success":
@@ -216,6 +287,19 @@ def process_request(user_input: str, roster: list[str], team_name: str) -> dict:
                 parts.append(f"Already on roster: {', '.join(skipped)}")
             status = "success" if added else "exists"
             return {"status": status, "message": " | ".join(parts), "data": None}
+
+        if intent == "set_position":
+            player_name = _resolve_name(data.get("player_name", "").strip(), roster)
+            position = data.get("position", "").strip()
+            if not position:
+                return {"status": "error", "message": "Couldn't identify a position in that message.", "data": None}
+            result = update_player_position(player_name, team_name, position)
+            if result == "success":
+                return {"status": "success", "message": f"Got it — {player_name} is now listed as {position}.", "data": None}
+            elif result == "not_found":
+                return {"status": "error", "message": f"{player_name} isn't on the roster yet. Add them first.", "data": None}
+            else:
+                return {"status": "error", "message": "Couldn't update the position. Try again.", "data": None}
 
         if intent == "log_notes":
             observations = data.get("observations", [])
@@ -279,6 +363,7 @@ def process_request(user_input: str, roster: list[str], team_name: str) -> dict:
 
         if intent == "player_summary":
             player_name = _resolve_name(data.get("player_name", "").strip(), roster)
+            position = _player_position(player_name, team_name)
             obs_rows = get_observations(player_name, team_name)
             if not obs_rows:
                 return {"status": "success", "message": f"No notes found for {player_name} yet.", "data": []}
@@ -286,7 +371,9 @@ def process_request(user_input: str, roster: list[str], team_name: str) -> dict:
                 client,
                 "You are a JSON-only sports assistant. Return only valid JSON, no markdown.",
                 _SUMMARY_PROMPT.format(
+                    persona=persona,
                     player_name=player_name,
+                    position=position,
                     team_name=team_name,
                     observations_text=_format_obs(obs_rows),
                 ),
@@ -299,6 +386,7 @@ def process_request(user_input: str, roster: list[str], team_name: str) -> dict:
 
         if intent == "improve_advice":
             player_name = _resolve_name(data.get("player_name", "").strip(), roster)
+            position = _player_position(player_name, team_name)
             obs_rows = get_observations(player_name, team_name)
             if not obs_rows:
                 return {"status": "success", "message": f"No notes found for {player_name} yet.", "data": []}
@@ -306,8 +394,10 @@ def process_request(user_input: str, roster: list[str], team_name: str) -> dict:
                 client,
                 "You are a JSON-only sports assistant. Return only valid JSON, no markdown.",
                 _ADVICE_PROMPT.format(
+                    persona=persona,
                     user_input=user_input,
                     player_name=player_name,
+                    position=position,
                     team_name=team_name,
                     obs_count=len(obs_rows),
                     observations_text=_format_obs(obs_rows),
@@ -326,10 +416,10 @@ def process_request(user_input: str, roster: list[str], team_name: str) -> dict:
                 "data": None,
             }
 
-        # unknown
+        # unknown — persona-aware fallback
         return {
             "status": "unknown",
-            "message": "Son, I'm a football coach, not a magic 8-ball. Stick to the playbook — add players, log practice notes, get a player summary, or ask how to help someone improve.",
+            "message": "I can help you add players, log session notes, get a player summary, ask for improvement advice, or list your roster.",
             "data": None,
         }
 

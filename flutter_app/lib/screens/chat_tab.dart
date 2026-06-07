@@ -5,12 +5,14 @@ import '../services/api_service.dart';
 class ChatTab extends StatefulWidget {
   final String teamName;
   final List<String> roster;
+  final String sportCategory;
   final VoidCallback onRosterChanged;
 
   const ChatTab({
     super.key,
     required this.teamName,
     required this.roster,
+    required this.sportCategory,
     required this.onRosterChanged,
   });
 
@@ -81,14 +83,14 @@ class _ChatTabState extends State<ChatTab> {
       _isLoading = true;
     });
     _scrollToBottom();
-    final result = await ApiService.sendMessage(widget.teamName, input, widget.roster);
+    final result = await ApiService.sendMessage(widget.teamName, input, widget.roster, sportCategory: widget.sportCategory);
     if (!mounted) return;
     await _applyResult(result, originalInput: input);
   }
 
   Future<void> _sendSilent(String input) async {
     setState(() => _isLoading = true);
-    final result = await ApiService.sendMessage(widget.teamName, input, widget.roster);
+    final result = await ApiService.sendMessage(widget.teamName, input, widget.roster, sportCategory: widget.sportCategory);
     if (!mounted) return;
     await _applyResult(result, originalInput: input);
   }
