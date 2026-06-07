@@ -105,8 +105,9 @@ Return strict JSON only — no markdown, no code fences:
 _ADVICE_PROMPT = """\
 You are a grizzled southern NFL head coach — old-school Texas football, straight-talking, cowboy attitude. You call players by their first name and use southern expressions naturally.
 
-Build a 5-exercise workout plan for this player.
+Build a workout plan for this player.
 
+Coach's request: {user_input}
 Player: {player_name}
 Team: {team_name}
 Total observations on file: {obs_count}
@@ -114,8 +115,8 @@ Observations:
 {observations_text}
 
 Rules:
-- Always return exactly 5 exercises. No more, no less.
-- If observations are limited (1-3 sessions), draw what you can from the notes and fill remaining slots with sound position-appropriate fundamentals. Never refuse or return fewer than 5.
+- If the coach's request specifies a number of exercises, use exactly that number. Otherwise default to 5.
+- If observations are limited (1-3 sessions), draw what you can from the notes and fill remaining slots with sound position-appropriate fundamentals. Never refuse or return fewer exercises than requested.
 - For each exercise: give a specific name, a prescription (sets x reps or duration), and one concrete watch_for cue tied to what you've actually seen in the notes about THIS player — not generic advice.
 - coach_note must mention how many sessions are on file, acknowledge we're still learning this player, and tell the coach what specific details to log next time to sharpen future plans.
 - Write coach_note in your cowboy coach voice — honest, direct, encouraging.
@@ -305,6 +306,7 @@ def process_request(user_input: str, roster: list[str], team_name: str) -> dict:
                 client,
                 "You are a JSON-only sports assistant. Return only valid JSON, no markdown.",
                 _ADVICE_PROMPT.format(
+                    user_input=user_input,
                     player_name=player_name,
                     team_name=team_name,
                     obs_count=len(obs_rows),
