@@ -369,7 +369,7 @@ class _DotState extends State<_Dot> with SingleTickerProviderStateMixin {
       ..repeat(reverse: true);
     _anim = Tween(begin: 0.3, end: 1.0).animate(
       CurvedAnimation(parent: _ctrl,
-          curve: Interval(delay / 600, 1.0, curve: Curves.easeInOut)),
+          curve: Interval(widget.delay / 600, 1.0, curve: Curves.easeInOut)),
     );
   }
 
