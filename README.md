@@ -4,6 +4,10 @@
 
 An AI-powered coaching app with a Flutter mobile frontend, FastAPI backend, and Claude AI for natural-language understanding. Coaches log into a personal account, manage multiple teams across different sports, and interact with a sport-aware AI assistant through a native mobile interface.
 
+## Video Demo
+
+[![Coach Notes Organizer — Video Tutorial](https://img.youtube.com/vi/E-lBfMEqlEU/maxresdefault.jpg)](https://youtu.be/E-lBfMEqlEU)
+
 ---
 
 ## Features
@@ -37,6 +41,20 @@ FastAPI  (src/api/main.py)
 ```
 
 The three Python layers communicate strictly top-down. The interface layer never touches storage directly. Full contracts in [`CONTRACT.md`](CONTRACT.md).
+
+### UML Diagrams
+
+**Backend, Engine & Storage Layers**
+
+![Backend Engine Storage Layers](docs/uml/Backend-Engine-Storage-Layers.png)
+
+**CI/CD & Client Layer**
+
+![CiCd Client Layer](docs/uml/CiCd-Client-Layer.png)
+
+**External Services**
+
+![External Services](docs/uml/external-services.png)
 
 ---
 
