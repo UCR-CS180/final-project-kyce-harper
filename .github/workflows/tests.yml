@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, mobile-frontend-ui]
   pull_request:
     branches: [main]
 
@@ -22,8 +22,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run engine and interface tests
-        run: pytest tests/engine/ tests/interface/ -v
+      - name: Run engine, interface, API, and storage unit tests
+        run: pytest tests/engine/ tests/interface/ tests/api/ tests/storage/test_storage_unit.py -v
 
   # ── Job 2: Integration tests — requires GitHub secrets ────────────────────
   storage-tests:
@@ -64,4 +64,27 @@ jobs:
         run: python3 diagnose_ci.py
 
       - name: Run storage integration tests
-        run: pytest tests/storage/ -v
+        run: pytest tests/storage/test_storage.py -v
+
+  # ── Job 3: Flutter tests — no secrets needed ──────────────────────────────
+  flutter-tests:
+    name: Flutter Tests (widget + service)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: flutter_app
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.x"
+          channel: stable
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Run Flutter tests
+        run: flutter test

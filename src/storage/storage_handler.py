@@ -1,10 +1,11 @@
-"""Storage layer: persists player and observation records to Google Sheets.
+"""Storage layer: persists team, player, and observation records to Google Sheets.
 
 Architecture position:
     interface → engine → storage
 
-Two sheets in one Google Sheets document:
-  players:      player_id | team_name | player_name
+Sheets in the Google Sheets document:
+  teams:        team_id | team_name | sport_category | user_id
+  players:      player_id | team_name | player_name | position
   observations: obs_id | player_name | team_name | session_date | notes
 """
 
@@ -23,8 +24,11 @@ _SERVICE_ACCOUNT_PATH = _PROJECT_ROOT / "service_account.json"
 
 SPREADSHEET_NAME = os.environ.get("SPREADSHEET_NAME", "coach-notes")
 
-_PLAYER_COLUMNS  = ["player_id", "team_name", "player_name"]
-_PLAYER_REQUIRED = set(_PLAYER_COLUMNS)
+_TEAM_COLUMNS  = ["team_id", "team_name", "sport_category", "user_id"]
+_TEAM_REQUIRED = {"team_id", "team_name", "sport_category", "user_id"}
+
+_PLAYER_COLUMNS  = ["player_id", "team_name", "player_name", "position"]
+_PLAYER_REQUIRED = {"player_id", "team_name", "player_name"}
 
 _OBS_COLUMNS  = ["obs_id", "player_name", "team_name", "session_date", "notes"]
 _OBS_REQUIRED = set(_OBS_COLUMNS)
@@ -35,10 +39,63 @@ def _open_spreadsheet() -> gspread.Spreadsheet:
     return client.open(SPREADSHEET_NAME)
 
 
+# ── Team functions ─────────────────────────────────────────────────────────────
+
+def save_team(data: dict) -> str:
+    """Save a team to the 'teams' sheet. Deduplicates on team_name.
+
+    Returns:
+        "success" — row appended.
+        "exists"  — team_name already present; no write.
+        "error"   — missing required keys or any exception.
+    """
+    if not _TEAM_REQUIRED.issubset(data):
+        return "error"
+    try:
+        ss = _open_spreadsheet()
+        ws = ss.worksheet("teams")
+        rows = ws.get_all_records()
+        for row in rows:
+            if row.get("team_name") == data["team_name"]:
+                return "exists"
+        ws.append_row([data[col] for col in _TEAM_COLUMNS])
+        return "success"
+    except Exception:
+        return "error"
+
+
+def get_teams_for_user(user_id: str) -> list[dict]:
+    """Return all teams belonging to user_id. Returns [] on any exception."""
+    try:
+        ss = _open_spreadsheet()
+        ws = ss.worksheet("teams")
+        rows = ws.get_all_records()
+        return [r for r in rows if r.get("user_id") == user_id]
+    except Exception:
+        return []
+
+
+def get_team(team_name: str) -> dict | None:
+    """Return the team record for team_name, or None if not found."""
+    try:
+        ss = _open_spreadsheet()
+        ws = ss.worksheet("teams")
+        rows = ws.get_all_records()
+        for row in rows:
+            if row.get("team_name") == team_name:
+                return row
+        return None
+    except Exception:
+        return None
+
+
+# ── Player functions ───────────────────────────────────────────────────────────
+
 def save_player(data: dict) -> str:
     """Save a player to the 'players' sheet.
 
     Duplicate check on (team_name, player_name) before writing.
+    Position defaults to 'Player' if not provided.
 
     Returns:
         "success" — row appended.
@@ -57,14 +114,20 @@ def save_player(data: dict) -> str:
                 and row.get("player_name", "").lower() == data["player_name"].lower()
             ):
                 return "exists"
-        ws.append_row([data[col] for col in _PLAYER_COLUMNS])
+        row_data = [
+            data["player_id"],
+            data["team_name"],
+            data["player_name"],
+            data.get("position", "Player"),
+        ]
+        ws.append_row(row_data)
         return "success"
     except Exception:
         return "error"
 
 
 def get_players(team_name: str) -> list[dict]:
-    """Return all players for a team as a list of dicts.
+    """Return all players for a team as a list of dicts (includes position).
 
     Returns [] on any exception.
     """
@@ -76,6 +139,37 @@ def get_players(team_name: str) -> list[dict]:
     except Exception:
         return []
 
+
+def update_player_position(player_name: str, team_name: str, position: str) -> str:
+    """Update the position column for a player.
+
+    Returns:
+        "success"   — position updated.
+        "not_found" — no matching (team_name, player_name) row.
+        "error"     — any exception.
+    """
+    try:
+        ss = _open_spreadsheet()
+        ws = ss.worksheet("players")
+        headers = ws.row_values(1)
+        try:
+            pos_col = headers.index("position") + 1  # 1-indexed
+        except ValueError:
+            return "error"
+        rows = ws.get_all_records()
+        for i, row in enumerate(rows, start=2):  # data starts at row 2
+            if (
+                row.get("team_name") == team_name
+                and row.get("player_name", "").lower() == player_name.lower()
+            ):
+                ws.update_cell(i, pos_col, position)
+                return "success"
+        return "not_found"
+    except Exception:
+        return "error"
+
+
+# ── Observation functions ──────────────────────────────────────────────────────
 
 def save_observation(data: dict) -> str:
     """Append an observation to the 'observations' sheet.
@@ -111,5 +205,20 @@ def get_observations(player_name: str, team_name: str) -> list[dict]:
             if r.get("player_name") == player_name
             and r.get("team_name") == team_name
         ]
+    except Exception:
+        return []
+
+
+def get_all_observations(team_name: str) -> list[dict]:
+    """Return all observations for a team sorted by session_date descending.
+
+    Returns [] on any exception.
+    """
+    try:
+        ss = _open_spreadsheet()
+        ws = ss.worksheet("observations")
+        rows = ws.get_all_records()
+        team_rows = [r for r in rows if r.get("team_name") == team_name]
+        return sorted(team_rows, key=lambda r: r.get("session_date", ""), reverse=True)
     except Exception:
         return []
